@@ -1,0 +1,929 @@
+---
+title: "PhD Chapter 3"
+author: "Thomas_Nicholson"
+date: "10/12/2021"
+output: html_document
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(warn = -1)
+library(tidyverse)
+library(devtools)
+library(kableExtra)
+library(randomForest)
+library(ggpubr)
+library(gplots)
+library(ROSE)
+setwd("~/bin/PhD_Chapters_Code/Chapter 3/")
+```
+
+
+```{r functions, include=FALSE}
+cumulativeCounts <- function(dists, smooth = T){
+  groups <- unique(dists$group)
+  for(i in groups){
+    dat <- dists %>% filter(group == i)
+    dat <- dat %>% mutate(count = 1) %>%
+    arrange(-max_dist) %>% group_by(group) %>%
+    mutate(cumulativeCount = cumsum(count)) %>% ungroup() %>%
+    group_by(group, max_dist) %>% summarise(cumulative_prop = max(cumulativeCount)/ nrow(dat))
+    if(smooth){
+      dat <- as.data.frame(spline(x = dat$max_dist,y =  dat$cumulative_prop))
+    }
+    dat <- dat %>% ungroup() %>% mutate(group = i)
+    if(exists('combinedDat')){
+      combinedDat <- combinedDat %>% bind_rows(dat)
+    }else{
+      combinedDat <- dat
+    }
+  }
+  return(combinedDat)
+}
+cumulativeDistribution <- function(dat, run.ks.test = T, alternative_pred, alternative_pc, alternative = 'two.sided', show.legend = F){
+  if(missing('alternative_pred')){alternative_pred <- alternative}
+  if(missing('alternative_pc')){alternative_pc <- alternative}
+distsCumulativeCount <- cumulativeCounts(dists = dat, smooth = F)
+distsCumulativeCount <- distsCumulativeCount %>% filter(group != "Predicted Known")
+
+p <- ggplot() +
+  geom_line(data = distsCumulativeCount, aes(x= max_dist, y = cumulative_prop, group = group, colour = group), size = 1, show.legend = show.legend) + theme_classic()
+
+if(run.ks.test == T){
+  pos <- dat %>% filter(group == "Positive Control")
+  neg <- dat %>% filter(group == "Negative Control")
+  pred <- dat %>% filter(group == "Predicted")
+  res <- ks.test(x = pred$max_dist, y = neg$max_dist, alternative = alternative_pred)
+  print(res)
+  res <- ks.test(x = pos$max_dist, y = neg$max_dist, alternative = alternative_pc)
+  print(res)
+}
+return(p)
+}
+readDepthsSetup <- function(file_path){
+  readsColName <- c("mean.val", "max.val", "counts.above.threshold", "ID", "genus")
+  reads.dat <- read.table(file_path, as.is = T, stringsAsFactors = F)
+  colnames(reads.dat) <- readsColName
+  reads.max <- reads.dat  %>% group_by(ID) %>% summarise(read.max.score  =  sum(max.val))
+  reads.mean <- reads.dat %>%
+    group_by(ID) %>%
+    summarise(reads.mean.score  = sum(mean.val))
+  reads.count <- reads.dat %>%
+    group_by(ID) %>%
+    filter(max.val > 0) %>%
+    summarise(max.val = max(max.val), read.counts  = n()) %>% 
+    select(-max.val)
+  reads.dat <- reads.max %>% full_join(reads.mean, by = "ID")
+  reads.dat <- reads.dat %>% full_join(reads.count, by = "ID")
+  return(reads.dat)
+}
+rscapeCovarianceSetup <- function(file_path){
+  cov.dat <- read.table(file_path, sep = "\t", comment.char = "#", as.is = T, header = F, fill = T, col.names = c("V1", "left_pos", "right_pos", "score", "e.value", "substitutions", "V2", "power", "ID"))
+  cov.dat <- cov.dat %>% select(ID, score, e.value, power)
+  cov.mean <- cov.dat %>% group_by(ID) %>% summarise(cov.mean.score = max(score))
+  cov.count <- cov.dat %>% group_by(ID) %>% summarise(cov.count = n())
+  cov.max <- cov.dat %>% group_by(ID) %>% summarise(cov.min.eval = min(e.value))
+  cov.power <- cov.dat %>% group_by(ID) %>% summarise(power = sum(power))
+  cov.dat <- cov.mean %>% full_join(cov.max, by = "ID") %>%
+    full_join(cov.count, by = "ID") %>%
+    full_join(cov.power, by = "ID")
+  cov.dat <- cov.dat %>% filter(!is.na(cov.mean.score)) %>% mutate(cov.combined.score = cov.count * cov.mean.score) 
+return(cov.dat)
+}
+gcSetup <- function(file_path){
+  dat <- read.table(file_path)
+colnames(dat) <- c("counts", "letter", "ID")
+
+datTotals <- dat %>% group_by(ID) %>% summarise(total = sum(counts))
+
+dat <- dat %>% filter(letter %in% c("C", "G")) %>% group_by(ID) %>% summarise(gc.count = sum(counts)) %>% left_join(datTotals, by = "ID") %>% 
+  mutate(gc.score = (gc.count/total)*100) %>% select(ID, gc.score)
+
+ return(dat)
+}
+alifoldSetup <- function(file_path){
+  dat<- read.table(file_path, header = F, comment.char = "#", quote = "", sep = "",   fill = T, as.is = T, col.names = c( "From",      "To",    "Strand",    "Native.MFE",    "Mean.MFE",     "STDV",        "Z", "ID"))
+  
+    dat <- dat %>% filter(ID != "")
+    
+    datSD <- dat %>% select(ID, STDV)
+    datMean <- dat %>% group_by(ID) %>% summarise(z_mean = mean(as.numeric(Z), na.rm = T))
+    datMax <- dat %>% group_by(ID) %>% summarise(z_max = max(as.numeric(Z), na.rm = T))
+    dat <- datMean %>% full_join(datMax, by = "ID") %>% full_join(datSD, by = "ID") %>% 
+      filter(!is.nan(STDV)) %>% select(-STDV) %>% unique()
+    
+  return(dat)
+
+}
+motifSetup <- function(file_path){
+  dat <- read.table(file_path, sep = "", comment.char = "#", as.is = T, header = F, fill = T)
+
+colnames(dat) <- c("seqname", "source", "feature", "start", "end", "score", "strand", "frame", "attribute", "ID")
+dat <- dat %>% group_by(feature, start, end, strand, ID) %>% summarise(score = max(score))
+
+
+
+datMean <- dat %>% group_by(ID) %>% summarise(motif.mean.score = mean(score))
+datMax <- dat %>% group_by(ID) %>% summarise(motif.max.score = max(score))
+datCount <- dat %>% group_by(ID) %>% summarise(motif_count = n())
+
+dat <- datMean %>% full_join(datMax, by = "ID") %>% 
+  full_join(datCount, by = "ID")
+return(dat)
+}
+replaceNAs <- function(dat){
+
+dat$mfe.score[is.na(dat$mfe.score)] <- 0
+dat$gc.score[is.na(dat$gc.score)] <- 50
+dat$distance[is.na(dat$distance)] <- 0
+dat$reads.mean.score[is.na(dat$reads.mean.score)] <- 0
+dat$read.max.score[is.na(dat$read.max.score)] <- 0
+dat$cov.mean.score[is.na(dat$cov.mean.score)] <- 0
+dat$cov.min.eval[is.na(dat$cov.min.eval)] <- 10
+# dat$cov.combined.score[is.na(dat$cov.combined.score)] <- 0
+dat$cov.count[is.na(dat$cov.count)] <- 1
+dat$read.counts[is.na(dat$read.counts)] <- 0
+dat$motif.mean.score[is.na(dat$motif.mean.score)] <- 0
+dat$motif.max.score[is.na(dat$motif.max.score)] <- 0
+dat$motif_count[is.na(dat$motif_count)] <- 0
+dat$z_mean[is.na(dat$z_mean)] <- 10
+dat$z_max[is.na(dat$z_max)] <- 10
+dat <- dat[dat$z_max != -Inf,]
+dat$alifold.score[is.na(dat$alifold.score)] <- 0
+dat$alifold_cov_score[is.na(dat$alifold_cov_score)] <- 0
+# dat$alifold_cov_score[dat$alifold_cov_score > 0] <- 0
+return(dat)
+}
+
+```
+
+# Process scores
+```{r read_depths_setup, eval=F, include=T}
+pcRDepth <- readDepthsSetup(file_path = "chapter_3_files/positive_control_read_depths_summary.txt")
+ncRDepth <- readDepthsSetup("chapter_3_files/negative_control_read_depths_summary.txt")
+predRDepth <- readDepthsSetup("chapter_3_files/predicted_read_depths_summary.txt")
+
+save(ncRDepth, file = "chapter_3_files/ncRDepth.Rda")
+save(pcRDepth, file = "chapter_3_files/pcRDepth.Rda")
+save(predRDepth, file = "chapter_3_files/predRDepth.Rda")
+
+```
+
+```{r rscape_setup, eval = F, include=T}
+pcCov<- rscapeCovarianceSetup("chapter_3_files/pc.cov")
+ncCovRNA <- rscapeCovarianceSetup("chapter_3_files/nc.cov")
+predCovRNA <- rscapeCovarianceSetup("chapter_3_files/pred.cov")
+
+
+save(pcCov, file = "chapter_3_files/pcCovariation.Rda")
+save(ncCovRNA, file = "chapter_3_files/ncCovariation.Rda")
+save(predCovRNA, file = "chapter_3_files/predCovariation.Rda")
+
+```
+
+```{r gc_content_setup, eval = F}
+predGC <- gcSetup(file_path = "chapter_3_files/predicted_gc_reference.txt")
+pcGC <- gcSetup(file_path = "chapter_3_files/positive_control_gc_reference.txt")
+ncGC <- gcSetup(file_path = "chapter_3_files/negative_control_gc_reference.txt")
+
+save(pcGC, file= "chapter_3_files/pcGC.Rda")
+save(ncGC, file= "chapter_3_files/ncGC.Rda")
+save(predGC, file= "chapter_3_files/predGC.Rda")
+
+```
+
+```{r z_score_setup, eval = F}
+pcAlifold<- alifoldSetup("chapter_3_files/positive_control.alifold")
+ncAlifold<- alifoldSetup("chapter_3_files/negative_control.alifold")
+predAlifold<- alifoldSetup("chapter_3_files/predicted.alifold")
+
+save(pcAlifold, file = "chapter_3_files/pcAlifold.Rda")
+save(ncAlifold, file = "chapter_3_files/ncAlifold.Rda")
+save(predAlifold, file = "chapter_3_files/predAlifold.Rda")
+```
+
+```{r MFE_setup, eval = F, echo=T}
+predMFE <- read.table("chapter_3_files/predicted_mfe.txt")
+pcMFE <- read.table("chapter_3_files/positive_control_mfe.txt")
+ncMFE <- read.table("chapter_3_files/negative_control_mfe.txt")
+
+colnames(pcMFE) <- c("mfe.score", "ID")
+colnames(ncMFE) <- c("mfe.score", "ID")
+colnames(predMFE) <- c("mfe.score", "ID")
+
+save(pcMFE, file= "chapter_3_files/pcMFE.Rda")
+save(ncMFE, file= "chapter_3_files/ncMFE.Rda")
+save(predMFE, file= "chapter_3_files/predMFE.Rda")
+
+```
+
+```{r motifs_setup, eval=F}
+pcMotif <- motifSetup("chapter_3_files/positive_control.rmfam")
+ncMotif <- motifSetup("chapter_3_files/negative_control.rmfam")
+predMotif <- motifSetup("chapter_3_files/predicted.rmfam")
+
+save(pcMotif, file = "chapter_3_files/pcMotif.Rda")
+save(ncMotif, file = "chapter_3_files/ncMotif.Rda")
+save(predMotif, file = "chapter_3_files/predMotif.Rda")
+
+```
+
+```{r alifold_covariance_setup, eval = F, include=T}
+ncAliCov <- read.table("chapter_3_files/negative_control_alifold_covariation.txt")
+pcAliCov <- read.table("chapter_3_files/positive_control_alifold_covariation.txt")
+predAliCov <- read.table("chapter_3_files/predicted_alifold_covariation.txt")
+
+
+colnames(ncAliCov) <- c("alifold_cov_score", "ID")
+colnames(pcAliCov) <- c("alifold_cov_score", "ID")
+colnames(predAliCov) <- c("alifold_cov_score", "ID")
+
+
+save(pcAliCov, file = "chapter_3_files/pcCovAli.Rda")
+save(ncAliCov, file = "chapter_3_files/ncCovAli.Rda")
+save(predAliCov, file = "chapter_3_files/predAliCov.Rda")
+```
+
+```{r alifold_score_setup, eval=F, echo=T}
+pcAlifoldScore <- read.table("chapter_3_files/positive_control_alifold_score.txt")
+ncAlifoldScore <- read.table("chapter_3_files/negative_control_alifold_score.txt")
+predAlifoldScore <- read.table("chapter_3_files/predicted_alifold_score.txt")
+
+colnames(pcAlifoldScore) <- c("alifold.score", "ID")
+colnames(ncAlifoldScore) <- c("alifold.score", "ID")
+colnames(predAlifoldScore) <- c("alifold.score", "ID")
+
+ncAlifoldScore <- ncAlifoldScore %>% group_by(ID) %>% summarise(alifold.score = min(alifold.score))
+pcAlifoldScore <- pcAlifoldScore %>% group_by(ID) %>% summarise(alifold.score = min(alifold.score))
+predAlifoldScore <- predAlifoldScore %>% group_by(ID) %>% summarise(alifold.score = min(alifold.score))
+
+save(pcAlifoldScore, file= "chapter_3_files/pcAlifoldScore.Rda")
+save(ncAlifoldScore, file= "chapter_3_files/ncAlifoldScore.Rda")
+save(predAlifoldScore, file= "chapter_3_files/predAlifoldScore.Rda")
+```
+
+
+# Figures
+## Classify RUFs
+
+### make rf_classifier
+
+```{r combined_data_setup, eval=T}
+load("chapter_3_files/max_dists_pc.Rda")
+load("chapter_3_files/max_dists_nc.Rda")
+load("chapter_3_files/pcRDepth.Rda")
+load("chapter_3_files/ncRDepth.Rda")
+load("chapter_3_files/pcCovariation.Rda") 
+load("chapter_3_files/ncCovariation.Rda")
+load("chapter_3_files/pcGC.Rda")
+load("chapter_3_files/ncGC.Rda")
+load("chapter_3_files/pcAlifold.Rda")
+load("chapter_3_files/ncAlifold.Rda")
+load("chapter_3_files/pcMFE.Rda")
+load("chapter_3_files/ncMFE.Rda")
+load("chapter_3_files/pcMotif.Rda")
+load("chapter_3_files/ncMotif.Rda")
+load("chapter_3_files/pcCovAli.Rda")
+load("chapter_3_files/ncCovAli.Rda")
+load("chapter_3_files/pcAlifoldScore.Rda")
+load("chapter_3_files/ncAlifoldScore.Rda")
+pcSRNACounts <- read.table("chapter_3_files/positive_control_snra_counts.txt")
+ncSRNACounts <- read.table("chapter_3_files/negative_control_snra_counts.txt")
+colnames(pcSRNACounts) <- c("srna.counts", "ID")
+colnames(ncSRNACounts) <- c("srna.counts", "ID")
+
+pcDat <- pcMFE %>% 
+  full_join(pcGC, by = "ID") %>% 
+  full_join(max_dists_pc, by = "ID") %>% 
+  full_join(pcRDepth, by = "ID") %>% 
+  full_join(pcCov, by = "ID") %>% 
+  full_join(pcMotif, by = "ID")%>% 
+  full_join(pcAlifold, by = "ID") %>% 
+  full_join(pcAliCov, by = "ID") %>% 
+  full_join(pcAlifoldScore, by = "ID") %>%
+  full_join(pcSRNACounts, by = "ID") %>%
+  mutate(group = "Positive Control") %>% 
+  unique() 
+
+ncDat <- ncMFE %>% 
+  full_join(ncGC, by = "ID") %>% 
+  full_join(max_dists_nc, by = "ID") %>% 
+  full_join(ncRDepth, by = "ID") %>% 
+  full_join(ncCovRNA, by = "ID") %>% 
+  full_join(ncMotif, by = "ID")%>% 
+  full_join(ncAlifold, by = "ID") %>% 
+  full_join(ncAliCov, by = "ID") %>% 
+  full_join(ncAlifoldScore, by = "ID") %>% 
+  full_join(ncSRNACounts, by = "ID") %>% 
+  mutate(group = "Negative Control") 
+ncDat <- ncDat %>% filter(reads.mean.score < 15)##ensure that the RINCs are not transcribed,  in order to compare untranscribed regions to transcribed sRNAs
+
+dat <- pcDat %>% bind_rows(ncDat) %>% select(-cov.combined.score)
+dat <- replaceNAs(dat = dat)
+dat <- dat %>% 
+  unique() %>% 
+  mutate(motif.sum = motif.mean.score*motif_count)
+
+save(dat, file = "chapter_3_files/randomForestDat.Rda")
+```
+
+### correlation_heat_map
+
+```{r correlation_heat_map, eval=T}
+load("chapter_3_files/randomForestDat.Rda")
+
+dat <- dat %>% select(-ID) %>% unique() %>% mutate(cov.min.eval = -log(cov.min.eval), z_mean = -z_mean,
+                                                               z_max = -z_max,
+                                                               alifold.score  =-alifold.score,
+                                                               mfe.score = -mfe.score,
+                                                               alifold_cov_score = -alifold_cov_score)
+
+set.seed(101)
+randomNum <- runif(n = nrow(dat), min = 0, max = 1)
+dat$random <- randomNum
+corInput <- dat %>% mutate(`Known sRNA or RINC` = ifelse(group == "Positive Control", 1, 0)) %>% select(-group, -power)
+
+corInput <- corInput %>% filter(distance < 0.15)  %>% select(-motif_count, -read.counts)
+
+colnames(corInput) <- c("MFE score", "G+C Percentage", "Evolutionary Distance", "Read depth (max)", "Read depth (mean)",
+                        "R-scape covariance (mean score)", "R-scape covariance (max score)", "R-scape covariance (number of significant pairs)", "Motif score (mean)", "Motif score (max)", "Alifold Z score (mean)", "Alifold Z score (max)", "Alifold covariance score", "Alifold score", "Number of sequences in alignment", "Sum of motif scores", "Random", "Known sRNA or RINC")
+
+dNames <- colnames(corInput)
+pNames <- colnames(corInput)
+pvalMatrix<-matrix(1, length(dNames), length(dNames))
+rhoMatrix <-matrix(0, length(dNames), length(dNames))
+rhoMatrixRounded <-matrix(0, length(dNames), length(dNames))
+sigMatrix <-matrix("",length(dNames), length(dNames))
+
+colnames(pvalMatrix)    <-pNames
+rownames(pvalMatrix)    <-pNames
+colnames(rhoMatrix)     <-pNames
+rownames(rhoMatrix)     <-pNames
+colnames(sigMatrix)     <-pNames
+rownames(sigMatrix)     <-pNames
+sigCount     <- 0
+sigCount2015 <- 0
+for(i in 1:length(dNames)){
+  # print(i)
+      for(j in 1:length(dNames)){
+        # print(j)
+   spear<-cor.test(corInput[,dNames[i] == colnames(corInput)], corInput[,dNames[j] == colnames(corInput)], method = "spearman", exact = T)
+   pvalMatrix[i,j] <- spear$p.value
+   rhoMatrix[i,j]  <- spear$estimate
+   rhoMatrixRounded[i,j]  <- round(spear$estimate, 3)
+   if(spear$p.value < 0.01/length(dNames)**2){
+sigMatrix[i,j]  <- "X"
+                sigCount <- sigCount + 1
+   }
+
+      }
+}
+
+heatmap.2(rhoMatrix, cellnote=round(rhoMatrix, digits = 2),notecex=1.5,notecol="black", col=rev(redblue(40)), density.info="none", trace="none", dendrogram=c("column"), symm=F,symkey=T,symbreaks=T, scale="none", key.title = "", srtRow=45, adjRow=c(0, 1), srtCol=45, adjCol=c(1,1), breaks=(-20:20)/20,
+margins = c(8, 8), cexRow=1.5, cexCol=1.5,font=1)
+
+write_data <- T
+if(write_data){
+svglite::svglite("chapter_3_svgs/heatmap.svg")
+heatmap.2(rhoMatrix, cellnote=sigMatrix,notecex=1.5,notecol="black", col=rev(redblue(40)), density.info="none", trace="none", dendrogram=c("column"), symm=F,symkey=T,symbreaks=T, scale="none", key.title = "", srtRow=45, adjRow=c(0, 1), srtCol=45, adjCol=c(1,1), breaks=(-20:20)/20,
+margins = c(8, 8), cexRow=1.5, cexCol=1.5,font=2)
+
+dev.off()
+}
+
+```
+
+### more rf_stuff
+
+```{r random_forest_goldilocks, eval = F}
+load("chapter_3_files/randomForestDat.Rda")
+
+dat <- dat %>% select(-ID) %>% unique() %>% select(read.max.score, read.counts, distance, cov.min.eval, z_max, alifold_cov_score, mfe.score, gc.score, srna.counts, motif.sum, group)
+set.seed(101)
+randomNum <- runif(n = nrow(dat), min = 0, max = 1)
+dat$random <- randomNum
+randomForestDat <- dat %>% mutate(group = ifelse(group == "Positive Control", 1, 0))
+randomForestDat$group <- as.factor(randomForestDat$group)
+
+randomForestDat[is.na(randomForestDat)] <- 0
+
+randomForestDat <- randomForestDat %>% filter(distance < 0.15) %>% select(-read.max.score, -srna.counts, -read.counts)
+
+colGroupNum <- match(x = "group", table = colnames(randomForestDat))
+
+data_set_size <- floor(nrow(randomForestDat)/2)
+indexes <- sample(1:nrow(randomForestDat), size = data_set_size)
+
+
+training <- randomForestDat[indexes,]
+validation <- randomForestDat[-indexes,]
+save(indexes, file = "chapter_3_files/indexes_gz.Rda")
+save(training, file = "chapter_3_files/training_gz.Rda")
+save(validation, file = "chapter_3_files/validation_gz.Rda")
+
+rf_classifier = randomForest(group ~ ., data=training, ntree=1000, importance=TRUE)
+rf_classifier
+
+save(rf_classifier, file = "chapter_3_files/rf_classifier_gz.Rda")
+```
+
+```{r random_forest_gz_res, eval = T}
+load("~/bin/PhD_Chapters_Code/Chapter 3/chapter_3_files/rf_classifier_gz.Rda")
+load("~/bin/PhD_Chapters_Code/Chapter 3/chapter_3_files/validation_gz.Rda")
+
+varImpPlot(rf_classifier)
+colGroupNum <- match(x = "group", table = colnames(validation))
+# Make predictions
+prediction_for_table <- predict(rf_classifier,validation[,-colGroupNum])
+table(observed=validation[,colGroupNum],predicted=prediction_for_table)
+
+
+write_data <- T
+if(write_data){
+svglite::svglite(filename="~/bin/PhD_Chapters_Code/Chapter 3/chapter_3_svgs/random_forest_gz.svg")
+varImpPlot(rf_classifier)
+
+
+dev.off()
+}
+```
+
+```{r validation_set_all, eval=T}
+load("chapter_3_files/randomForestDat.Rda")
+load("chapter_3_files/indexes_gz.Rda")
+load("chapter_3_files/rf_classifier_gz.Rda")
+
+##recreate validation where the reads data is kept
+validation <- dat[-indexes,]
+
+##keep reads and repeat previous filter steps
+validation <- validation %>% mutate(motif.sum = motif.mean.score*motif_count) %>% filter(distance < 0.15) %>% select(read.max.score, distance, cov.min.eval, z_max, motif.max.score, alifold_cov_score, mfe.score, gc.score, motif.sum, group, ID) ##reads are still kept
+set.seed(101)
+randomNum <- runif(n = nrow(validation), min = 0, max = 1)
+validation$random <- randomNum
+colGroupNum <- match(x = "group", table = colnames(validation))
+colIDNum <- match(x = "ID", table = colnames(validation))
+
+#regenerate probability scores
+prediction_for_roc_curve <- predict(rf_classifier,validation[,-c(colIDNum, colGroupNum)],type="prob")
+validation$probability <- prediction_for_roc_curve[,2]
+
+##get the number of times each ID was found expressed before redundancy was removed
+redundacy_counts_pc <- read.table("chapter_3_files/pc_counts.txt")
+colnames(redundacy_counts_pc) <- c("ID", "srna.counts.2")
+
+validation <- validation %>% left_join(redundacy_counts_pc, by = "ID")
+validation <- validation %>% select(read.max.score, distance, cov.min.eval, z_max, motif.max.score, alifold_cov_score, mfe.score, gc.score, srna.counts.2, motif.sum, group, ID, random, probability)
+
+redundacy_counts_nc <- read.table("chapter_3_files/negative_control_counts.txt")
+colnames(redundacy_counts_nc) <- c("srna.counts.3", "ID")
+
+##adds the same counts data for the negative controls to validation that was added for the positive controls
+validation <- validation %>% left_join(redundacy_counts_nc, by = "ID")
+validation2 <- validation %>% mutate(srna.counts.2 = ifelse(is.na(srna.counts.2), srna.counts.3, srna.counts.2)) %>% select(-srna.counts.3)
+
+
+save(validation2, file = "chapter_3_files/validatation2.Rda")
+```
+
+
+```{r random_forest_predicted_data, eval=T}
+load("chapter_3_files/rf_classifier_gz.Rda")
+load("chapter_3_files/randomForestDat.Rda")
+load("chapter_3_files/max_dists_pred.Rda")
+load("chapter_3_files/predRDepth.Rda")
+load("chapter_3_files/predCovariation.Rda") 
+load("chapter_3_files/predGC.Rda")
+load("chapter_3_files/predAlifold.Rda")
+load("chapter_3_files/predMFE.Rda")
+load("chapter_3_files/predMotif.Rda")
+load("chapter_3_files/predAlifoldScore.Rda")
+load("chapter_3_files/predAliCov.Rda")
+
+predSRNACounts <- read.table("chapter_3_files/predicted_snra_counts.txt")
+colnames(predSRNACounts) <- c("srna.counts", "ID")
+
+predDat <- predMFE %>%
+  full_join(predGC, by = "ID") %>%
+  full_join(max_dists_pred, by = "ID") %>%
+  full_join(predRDepth, by = "ID") %>%
+  full_join(predCovRNA, by = "ID") %>%
+  full_join(predMotif, by = "ID")%>%
+  full_join(predAlifold, by = "ID") %>%
+  full_join(predAliCov, by = "ID") %>%
+  full_join(predAlifoldScore, by = "ID") %>%
+  full_join(predSRNACounts, by = "ID") %>%
+  select(-cov.combined.score) %>% 
+  mutate(group = "Predicted")
+
+
+##indicates how many ids have been merged into the current id
+redundacy_counts_pred <- read.table("chapter_3_files/predicted_counts.txt")
+colnames(redundacy_counts_pred) <- c("srna.counts.2", "ID")
+
+predDat <- predDat %>% left_join(redundacy_counts_pred, by = "ID")
+predDat <- predDat %>% mutate(alifold_cov_score = as.numeric(alifold_cov_score))
+predDat <- predDat %>% mutate(motif.sum = motif.mean.score*motif_count) %>% select(distance, cov.min.eval, z_max, motif.max.score, alifold_cov_score, mfe.score, gc.score, srna.counts.2, motif.sum, group, ID,  read.max.score, read.counts)
+
+
+
+set.seed(101)
+randomNum <- runif(n = nrow(predDat), min = 0, max = 1)
+predDat$random <- randomNum
+predDat$mfe.score[is.na(predDat$mfe.score)] <- 0
+predDat$gc.score[is.na(predDat$gc.score)] <- 50
+predDat$distance[is.na(predDat$distance)] <- 0
+predDat$cov.min.eval[is.na(predDat$cov.min.eval)] <- 10
+predDat$motif.max.score[is.na(predDat$motif.max.score)] <- 0
+predDat$motif.sum[is.na(predDat$motif.sum)] <- 0
+predDat$z_max[is.na(predDat$z_max)] <- 10
+predDat <- predDat[predDat$z_max != -Inf,]
+predDat$alifold_cov_score[is.na(predDat$alifold_cov_score)] <- 0
+predDat$srna.counts[is.na(predDat$srna.counts)] <- 1
+
+
+
+colGroupNum <- match(x = "group", table = colnames(predDat))
+colIDNum <- match(x = "ID", table = colnames(predDat))
+colCountNum <- match(x = "srna.counts.2", table = colnames(predDat))
+
+predRfDat <- predDat %>% select(distance, cov.min.eval, z_max, alifold_cov_score, mfe.score, gc.score, motif.sum, random)
+prediction_for_predcited_data <- predict(rf_classifier,predRfDat, type = 'response')
+prob_for_predcited_data <- predict(rf_classifier,predRfDat, type = 'prob')
+predDat$probability <- prob_for_predcited_data[,2]
+
+save(predDat, file = "chapter_3_files/predDat.Rda")
+
+##filters for features that are used in the analysis
+featuresSelected <- dat %>% mutate(motif.sum = motif.mean.score*motif_count) %>% unique() %>% mutate(motif.sum = motif.mean.score*motif_count) %>% select(read.max.score, distance, cov.min.eval, z_max, motif.max.score, alifold_cov_score, mfe.score, gc.score, motif.sum, group)
+
+##adds the predicted data to this dataset so that all data is included.
+featuresSelected <- predDat %>% select(read.max.score, distance, cov.min.eval, z_max, motif.max.score, alifold_cov_score, mfe.score, gc.score, srna.counts, motif.sum, group) %>% bind_rows(featuresSelected) %>%
+  filter(!is.na(group))
+
+save(featuresSelected, file="~/bin/PhD_Chapters_Code/Chapter 3/chapter_3_files/featuresSelected_gz.Rda")
+
+```
+
+### Plots
+
+```{r plot_probabilities, eval=T}
+
+load("~/bin/PhD_Chapters_Code/Chapter 3/chapter_3_files/predDat.Rda")
+
+load("~/bin/PhD_Chapters_Code/Chapter 3/chapter_3_files/validatation2.Rda")
+
+probDat <- predDat %>% select(probability, ID, group, srna.counts.2) %>% bind_rows(validation2 %>% select(probability, ID, group, srna.counts.2)) %>% dplyr::rename(max_dist = probability)
+
+
+countsCumul <- cumulativeCounts(dists = probDat, smooth = F)
+
+##produces plot to use for figure showing probabilty results
+p <- ggplot() +
+  geom_line(data = countsCumul, aes(x= max_dist, y = cumulative_prop,
+                                    group = group, colour = group),
+            size = 1.5, show.legend = F)+
+  scale_y_continuous(trans = 'log10')
+p + theme_classic()
+
+write_data <- T
+if(write_data){
+ggsave(filename = "~/bin/PhD_Chapters_Code/Chapter 3/chapter_3_svgs/probabilites_rf_log_gz.svg", plot = p, width = 178, height = 155, units = "mm")
+}
+```
+
+
+```{r score_values, eval=TRUE}
+load("~/bin/PhD_Chapters_Code/Chapter 3/chapter_3_files/predDat.Rda")
+
+load("~/bin/PhD_Chapters_Code/Chapter 3/chapter_3_files/validatation2.Rda")
+
+probDat <- predDat %>% bind_rows(validation2)
+##This works out the values for sens/spec/precision
+threshold <- 0.5
+
+scoreProbabities <- function(probDat, threshold){
+
+tp <- probDat %>% filter(group == "Positive Control", max_dist > threshold) %>% nrow()
+fp <- probDat %>% filter(group == "Negative Control", max_dist > threshold) %>% nrow()
+pos <- probDat %>% filter(group == "Positive Control") %>% nrow()
+
+tn <- probDat %>% filter(group == "Negative Control", max_dist <= threshold) %>% nrow()
+neg <- probDat %>% filter(group == "Negative Control") %>% nrow()
+
+sens <- tp/pos ##sensitivity
+spec <- tn/neg ##specificity
+prec <- tp/(tp+fp) ##precision
+fpr <- fp/neg
+res <- probDat %>% group_by(group) %>% summarise(positive_res = round(mean(max_dist > threshold), 3)) %>% mutate(negative_res = 1 - positive_res)
+outList <- list()
+outList$sensitivity <- sens
+outList$precision <- prec
+outList$fpr <- fpr
+outList$res <- res
+return(outList)
+}
+
+inputDat <- probDat %>% dplyr::rename(max_dist = probability)
+scoreProbabities(probDat = inputDat, threshold = 0.81)
+
+inputDat <- probDat %>% dplyr::rename(max_dist = distance)
+scoreProbabities(probDat = inputDat, threshold = 0.04)
+
+inputDat <- probDat %>% dplyr::rename(max_dist = motif.sum)
+scoreProbabities(probDat = inputDat, threshold = 35)
+
+inputDat <- probDat %>% mutate(max_dist = -z_max)
+scoreProbabities(probDat = inputDat, threshold = 3.1)
+
+```
+
+```{r cumulative_distributions, eval=T}
+load("chapter_3_files/featuresSelected_gz.Rda")
+##function written using max_dist as column name so each variable needs to  be renamed to this before using cumulativeDistribution()
+
+dat <- featuresSelected %>% dplyr::rename(max_dist = distance) 
+distance.p <- cumulativeDistribution(dat, alternative = "two.sided")
+distance.p <- distance.p +
+   labs(y = "Cumulative Proportion", x = "Evolutionary distance")
+
+##known sRNAs and predicted RUFs are only selected if there is read depths. For a fair comparison, RINCs with read depths of 0 are removed.
+dat <- featuresSelected %>% select(group, read.max.score) %>% dplyr::rename(max_dist = read.max.score) %>% filter(max_dist > 0)
+reads.p <- cumulativeDistribution(dat, alternative = 'two.sided', show.legend = F)
+reads.p <- reads.p +
+   labs(y = "Cumulative Proportion", x = "Total reads")+
+  scale_x_continuous(trans = "log10")
+#reads.p
+
+dat <- featuresSelected %>% mutate(max_dist = -log(cov.min.eval))
+rscape.p <- cumulativeDistribution(dat)
+rscape.p <- rscape.p +
+   labs(y = "Cumulative Proportion", x = "Rscape covariance score")
+# rscape.p
+
+##none of the z scores are greater than 3, so the NA value of 10 is changed to 3 (then the negaive is taken for the plot)
+dat <- featuresSelected %>% mutate(max_dist = ifelse(z_max == 10, -3, -z_max)) %>% select(group, max_dist)
+z.p <- cumulativeDistribution(dat, show.legend = F)
+z.p <- z.p +
+   labs(y = "Cumulative Proportion", x = "Alifold z-score (negative energy)")
+
+# z.p
+##selected a window where the values are easier to visualise. This has removed 16 known sRNAs and 9 predicted RUFs
+dat <- featuresSelected %>% dplyr::rename(max_dist = motif.sum) %>% filter(max_dist < 1000)
+motif.p <- cumulativeDistribution(dat)
+motif.p <- motif.p +
+   labs(y = "Cumulative Proportion", x = "Motif score")
+
+dat <- featuresSelected %>% mutate(max_dist = -alifold_cov_score)
+alifold.cov.p <- cumulativeDistribution(dat)
+alifold.cov.p <- alifold.cov.p +
+   labs(y = "Cumulative Proportion", x = "Alifold covariance score")
+
+dat <- featuresSelected %>% mutate(max_dist = -mfe.score)
+mfe.p <- cumulativeDistribution(dat, alternative = 'two.sided')
+mfe.p <- mfe.p +
+   labs(y = "Cumulative Proportion", x = "MFE score (negative energy)")
+
+
+dat <- featuresSelected %>% arrange(gc.score) %>% mutate(gc.score = round(gc.score))
+
+predCounts <- dat %>% filter(group == "Predicted") %>% group_by(gc.score) %>% summarise(count = n()) %>% arrange(gc.score) %>% ungroup() %>% tidyr::complete(gc.score = seq(from = 0, to = 100, by = 1), fill = list(count = 0))
+pcCounts <- dat %>% filter(group == "Positive Control") %>% group_by(gc.score) %>% summarise(count = n()) %>% arrange(gc.score) %>% ungroup() %>% tidyr::complete(gc.score = seq(from = 0, to = 100, by = 1), fill = list(count = 0))
+ncCounts <- dat %>% filter(group == "Negative Control") %>% group_by(gc.score) %>% summarise(count = n()) %>% arrange(gc.score) %>% ungroup() %>% tidyr::complete(gc.score = seq(from = 0, to = 100, by = 1), fill = list(count = 0))
+
+pcTotal <- dat %>% filter(group == "Positive Control") %>% nrow()
+ncTotal <- dat %>% filter(group == "Negative Control") %>% nrow()
+predTotal <- dat %>% filter(group == "Predicted") %>% nrow()
+
+pcGC <- zoo::zoo(pcCounts$count)
+ncGC <- zoo::zoo(ncCounts$count)
+predGC <- zoo::zoo(predCounts$count)
+
+smoothPC <- zoo::rollapply(pcGC, width = 10, by = 1, FUN = mean, align = "center", partial = T) 
+smoothNC <- zoo::rollapply(ncGC, width = 10, by = 1, FUN = mean, align = "center", partial = T) 
+smoothPred <- zoo::rollapply(predGC, width = 10, by = 1, FUN = mean, align = "center", partial = T) 
+
+smoothPC <- as.data.frame(smoothPC) %>% mutate(x = row_number() -1) %>% mutate(group = "Positive Control") %>% dplyr::rename(y = smoothPC) %>% mutate(y = y/pcTotal)
+smoothNC <- as.data.frame(smoothNC) %>% mutate(x = row_number() -1) %>% mutate(group = "Negative Control") %>% dplyr::rename(y = smoothNC) %>% mutate(y = y/ncTotal)
+smoothPred <- as.data.frame(smoothPred) %>% mutate(x = row_number() -1) %>% mutate(group = "Predicted") %>% dplyr::rename(y = smoothPred) %>% mutate(y = y/predTotal)
+smoothGC <- smoothPC %>%  bind_rows(smoothNC, smoothPred)
+
+gc.p <- ggplot() +
+  geom_path(data = smoothGC, aes(x = x, y = y, group = group, color = group), size = 1, show.legend = FALSE)  + labs(y = "Proportion", x = "GC percentage")  + theme_classic()
+
+pos <- dat %>% filter(group == "Positive Control")
+neg <- dat %>% filter(group == "Negative Control")
+pred <- dat %>% filter(group == "Predicted")
+
+res <- ks.test(x = pred$gc.score, y = neg$gc.score, alternative = 'less')
+print(res)
+res <- ks.test(x = pos$gc.score, y = neg$gc.score, alternative = 'two.sided')
+print(res)
+
+
+
+all.p <- ggarrange(distance.p, reads.p, mfe.p, z.p, rscape.p, alifold.cov.p,  motif.p, gc.p + rremove("x.text"),
+          labels = LETTERS[1:9],
+          ncol = 3, nrow = 3)
+
+all.p
+
+run_all <- T
+if(run_all){
+ggsave(filename = "~/bin/PhD_Chapters_Code/Chapter 3/chapter_3_svgs/all_distributions.svg", plot = all.p, width = 450, height = 307, units = "mm")
+
+
+}
+
+```
+
+```{r read_depths_roc, eval=T}
+load("~/bin/PhD_Chapters_Code/Chapter 3/chapter_3_files/ncRDepth.Rda")
+load("~/bin/PhD_Chapters_Code/Chapter 3/chapter_3_files/pcRDepth.Rda")
+
+pcRDepth <- pcRDepth %>% mutate(response = 1)
+ncRDepth <- ncRDepth %>% mutate(response = 0)
+rocData <- pcRDepth %>% bind_rows(ncRDepth)
+
+roc.curve(response = rocData$response, predicted = rocData$read.max.score,
+          main="ROC curve for Read Depths")
+
+write_data <- T
+if(write_data){
+svglite:::svglite("~/bin/PhD_Chapters_Code/Chapter 3/chapter_3_svgs/reads_max.svg")
+roc.curve(response = rocData$response, predicted = rocData$read.max.score,
+          main="ROC curve for Read Depths")
+dev.off()
+}
+```
+
+```{r distance_roc, eval=T}
+load(file = "chapter_3_files/max_dists_pc.Rda")
+load(file = "chapter_3_files//max_dists_nc.Rda")
+max_dists_pc <- max_dists_pc  %>% mutate(response = 1)
+max_dists_nc <- max_dists_nc  %>% mutate(response = 0)
+
+rocData <- max_dists_pc%>% bind_rows(max_dists_nc)
+roc.curve(response = rocData$response, predicted = rocData$distance,
+          main="ROC curve for Maximum Phylogenetic Distance")
+write_data <- T
+if(write_data){
+svglite:::svglite("~/bin/PhD_Chapters_Code/Chapter 3/chapter_3_svgs/distance_roc.svg")
+roc.curve(response = rocData$response, predicted = rocData$distance,
+          main="ROC curve for Maximum Phylogenetic Distance")
+dev.off()
+}
+```
+
+```{r rscape_roc, eval=T}
+load("chapter_3_files/pcCovariation.Rda")
+load("chapter_3_files/ncCovariation.Rda")
+
+pcCov <- pcCov %>% mutate(response = 1)
+ncCov <- ncCovRNA%>% mutate(response = 0)
+rocData <- pcCov %>% bind_rows(ncCov) %>% filter(!is.na(cov.min.eval))
+roc.curve(response = rocData$response, predicted = rocData$cov.min.eval,
+          main="ROC curve for Covariation Scores")
+
+
+
+
+write_data <- T
+if(write_data){
+
+svglite:::svglite("~/bin/PhD_Chapters_Code/Chapter 3/chapter_3_svgs/rscape_roc.svg")
+roc.curve(response = rocData$response, predicted = rocData$cov.min.eval,
+          main="ROC curve for Covariation Scores")
+
+dev.off()
+}
+
+```
+
+```{r gc_roc, eval=T}
+load("chapter_3_files/pcGC.Rda")
+load("chapter_3_files/ncGC.Rda")
+
+pcGC <- pcGC %>% mutate(response = 1)
+ncGC <- ncGC %>% mutate(response = 0)
+
+rocData <- pcGC %>% bind_rows(ncGC)
+
+roc.curve(response = rocData$response, predicted = rocData$gc.score,
+          main="ROC curve for GC%")
+
+
+write_data <- T
+if(write_data){
+svglite:::svglite(filename="~/bin/PhD_Chapters_Code/Chapter 3/chapter_3_svgs/gc.svg")
+roc.curve(response = rocData$response, predicted = rocData$gc.score,
+          main="ROC curve for GC%")
+
+dev.off()
+}
+
+```
+
+```{r mfe_roc, eval=T}
+load("chapter_3_files/pcMFE.Rda")
+load("chapter_3_files/ncMFE.Rda")
+
+pcMFE <- pcMFE %>% mutate(response = 1)
+ncMFE <- ncMFE %>% mutate(response = 0)
+
+rocData <- pcMFE %>% bind_rows(ncMFE)
+
+roc.curve(response = rocData$response, predicted = rocData$mfe.score,
+          main="ROC curve for MFE")
+
+
+write_data <- T
+if(write_data){
+svglite:::svglite(filename="~/bin/PhD_Chapters_Code/Chapter 3/chapter_3_svgs/mfe.svg")
+roc.curve(response = rocData$response, predicted = rocData$mfe.score,
+          main="ROC curve for MFE")
+
+dev.off()
+}
+
+```
+
+```{r alicov_roc, eval=T}
+load("chapter_3_files/pcCovAli.Rda")
+load("chapter_3_files/ncCovAli.Rda")
+
+pcAliCov <- pcAliCov %>% mutate(response = 1)
+ncAliCov <- ncAliCov %>% mutate(response = 0)
+
+rocData <- pcAliCov %>% bind_rows(ncAliCov)
+
+roc.curve(response = rocData$response, predicted = rocData$alifold_cov_score,
+          main="ROC curve for Alifold covariation")
+
+
+write_data <- T
+if(write_data){
+svglite:::svglite(filename="~/bin/PhD_Chapters_Code/Chapter 3/chapter_3_svgs/ali_cov.svg")
+roc.curve(response = rocData$response, predicted = rocData$alifold_cov_score,
+          main="ROC curve for Alifold covariance")
+
+dev.off()
+}
+
+```
+
+```{r motifs_roc, eval=T}
+load("chapter_3_files/pcMotif.Rda")
+load("chapter_3_files/ncMotif.Rda")
+
+pcMotif <- pcMotif %>% mutate(response = 1)
+ncMotif <- ncMotif %>% mutate(response = 0)
+
+rocData <- pcMotif %>% bind_rows(ncMotif) %>% mutate(sum.score = motif.mean.score*motif_count)
+
+roc.curve(response = rocData$response, predicted = rocData$sum.score,
+          main="ROC curve for sum of Motif scores")
+
+
+write_data <- T
+if(write_data){
+svglite:::svglite(filename="~/bin/PhD_Chapters_Code/Chapter 3/chapter_3_svgs/motifs.svg")
+roc.curve(response = rocData$response, predicted = rocData$sum.score,
+          main="ROC curve for Motif Scores")
+
+dev.off()
+}
+
+```
+
+```{r zscore_roc, eval=T}
+load("chapter_3_files/pcAlifold.Rda")
+load("chapter_3_files/ncAlifold.Rda")
+
+pcAlifold <- pcAlifold %>% mutate(response = 1)
+ncAlifold <- ncAlifold %>% mutate(response = 0)
+
+rocData <- pcAlifold %>% bind_rows(ncAlifold)
+
+roc.curve(response = rocData$response, predicted = rocData$z_max,
+          main="ROC curve for Z-score (Alifold)")
+
+
+write_data <- T
+if(write_data){
+svglite:::svglite(filename="~/bin/PhD_Chapters_Code/Chapter 3/chapter_3_svgs/zscore.svg")
+roc.curve(response = rocData$response, predicted = rocData$z_max,
+          main="ROC curve for Z-score (Alifold)")
+
+dev.off()
+}
+
+```
+
+
+
+
+
+--------
