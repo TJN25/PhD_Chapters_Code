@@ -638,6 +638,14 @@ scoreProbabities(probDat = inputDat, threshold = 35)
 inputDat <- probDat %>% mutate(max_dist = -z_max)
 scoreProbabities(probDat = inputDat, threshold = 3.1)
 
+
+probDatExpanded <- probDat %>% uncount(srna.counts.2)
+
+##number of expressed regions classified
+probDatExpanded %>% filter(group == "Predicted", probability > 0.81) %>% nrow()
+##number of predicted rufs classified
+probDatExpanded %>% filter(group == "Predicted", probability > 0.81) %>% select(ID) %>% unique() %>% nrow()
+
 ```
 
 ```{r cumulative_distributions, eval=T}
