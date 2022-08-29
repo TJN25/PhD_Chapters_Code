@@ -325,7 +325,6 @@ dat <- replaceNAs(dat = dat)
 dat <- dat %>% 
   unique() %>% 
   mutate(motif.sum = motif.mean.score*motif_count)
-
 save(dat, file = "chapter_3_files/randomForestDat.Rda")
 ```
 
@@ -594,7 +593,6 @@ ggsave(filename = "~/bin/PhD_Chapters_Code/Chapter 3/chapter_3_svgs/probabilites
 }
 ```
 
-
 ```{r score_values, eval=TRUE}
 load("~/bin/PhD_Chapters_Code/Chapter 3/chapter_3_files/predDat.Rda")
 
@@ -625,6 +623,12 @@ outList$fpr <- fpr
 outList$res <- res
 return(outList)
 }
+
+inputDat <- probDat %>% dplyr::rename(max_dist = probability)
+scoreProbabities(probDat = inputDat, threshold = 0.5)
+
+inputDat <- probDat %>% dplyr::rename(max_dist = probability)
+scoreProbabities(probDat = inputDat, threshold = 0.22)
 
 inputDat <- probDat %>% dplyr::rename(max_dist = probability)
 scoreProbabities(probDat = inputDat, threshold = 0.81)
@@ -935,3 +939,748 @@ dev.off()
 
 
 --------
+
+
+
+
+```{r predicted_data_upsetr_setup, eval=F, include=F}
+
+pairs <- read.table("~/phd/RNASeq/srna_seqs/version_1/predicted/large_alignments/query_target_pairs.txt")
+colnames(pairs) <- c("target.name", "query.genome", "ID")
+contig_labels <- read.table("~/phd/RNASeq/genome_contig_pairs.txt")
+colnames(contig_labels) <- c("target.name", "target.genome")
+pairs <- pairs %>% left_join(contig_labels, by = 'target.name')
+
+genus_labels <- read.table("~/phd/RNASeq/contig_genus_lables.txt")
+
+colnames(genus_labels) <- c("target.name", "genus")
+
+pairs <- pairs %>% left_join(genus_labels)
+
+
+
+genus_name <- "Plautia"
+tmp <- pairs %>% filter(grepl(pattern = genus_name, x = genus, ignore.case = T)) %>% select(ID, genus) %>% unique()
+
+
+repDat <- pairs %>% select(ID, genus) %>% mutate(count = 1)
+mat <- reshape2::acast(repDat, formula = ID ~ genus)
+
+upsetDat <- as.data.frame(mat)
+
+upsetDat$names <- row.names(upsetDat)
+upsetDat[upsetDat != 0] <- 1
+
+genus_selection <- read.table("~/Downloads/python_git/python_files/genera_list.txt")
+
+colVals<- match(x = genus_selection$V1, table = colnames(upsetDat))
+
+colVals <- colVals[!is.na(colVals)]
+
+upsetSubsetPredicted <- upsetDat[,colVals]
+
+save(upsetSubsetPredicted, file='~/Downloads/R-master/r_files/upsetSubsetPredicted.Rda')
+
+```
+
+
+```{r predicted_data_upsetr, eval=T}
+load('~/Downloads/R-master/r_files/upsetSubsetPredicted.Rda')
+
+sumsUpset <- colSums(upsetSubsetPredicted)
+
+sumsDat <- data.frame(ID = colnames(upsetSubsetPredicted), sums = sumsUpset)
+
+
+analysed_genomes <- c("Escherichia", "Shigella", "Salmonella", "Enterobacter", "Klebsiella","Serratia", "Edwardsiella", "Erwinia", "Photorhabdus", "Yersinia", "Alteromonas", "Acinetobacter", "Pseudomonas", "Methylomicrobium", "Stenotrophomonas", "Xanthomonas", "Xylella", "Lysobacter")
+
+cols_order <- match(analysed_genomes, sumsDat$ID)
+
+sumsDat <- sumsDat[cols_order,]
+
+sumsDat$genome_count <- c(6, 3, 5, 4, 3, 3, 1, 1, 2, 5, 4, 4,6, 1, 2, 3, 1, 1)
+sumsDat$rnaseq_count <- c(53, 22, 44, 21, 15, 33, 5, 5, 4, 2, 23, 36, 64, 5, 10, 20, 5, 6)
+
+sumsDat <- sumsDat %>% mutate(srnas_genome_adj  = sums/genome_count, 
+                              srnas_rnaseq_adj  = sums/rnaseq_count)
+
+fit <- lm(sums~rnaseq_count, data = sumsDat)
+
+summary(fit)
+
+ggplot() +
+  geom_point(data = sumsDat, aes(x = rnaseq_count, y = sums)) +
+  geom_abline(intercept = 141.679, slope = 6.991)
+
+ggplot() +
+  geom_histogram(data = sumsDat, aes(x = sums), binwidth = 100)
+
+ggplot() +
+  geom_point(data  = sumsDat, aes(x = genome_count, y = sums), color = "blue") +
+  geom_point(data  = sumsDat, aes(x = rnaseq_count, y = sums), color = "red")
+
+tree_order <- c("Escherichia", "Shigella", "Salmonella", "Enterobacter", "Klebsiella", "Plautia", "Citrobacter","Serratia", "Wigglesworthia", "Buchnera", "Sodalis", "Lonsdalea", "Brenneria", "Dickeya", "Edwardsiella", "Pantoea", "Erwinia", "Proteus", "Providencia", "Xenorhabdus", "Photorhabdus", "Mannheimia", "Aggregatibacter", "Alishewanella", "Actinobacillus", "Yersinia", "Vibrio", "Alteromonas", "Agarivorans", "Pseudoalteromonas", "Moritella", "Shewanella", "Psychrobacter", "Moraxella", "Acinetobacter", "Azotobacter", "Pseudomonas", "Marinobacter", "Methylomicrobium", "Methylomonas", "Cycloclasticus", "Methylococcus", "Francisella", "Pseudoxanthomonas", "Stenotrophomonas", "Xanthomonas", "Xylella", "Lysobacter", "Candidatus")
+
+cols_order <- match(tree_order, colnames(upsetSubsetPredicted))
+
+tmp <- data.frame(tree_order, cols_order)
+
+upsetSubsetPredicted <- upsetSubsetPredicted[,cols_order]
+
+
+sumsUpset <- rowSums(upsetSubsetPredicted)
+
+sumsDat <- data.frame(ID = row.names(upsetSubsetPredicted), sums = sumsUpset)
+upsetSubsetPC <- upsetSubsetPredicted
+
+# pred_with_IDs <- upsetSubsetPredicted
+
+# pred_with_IDs$ID <- row.names(predWith_IDs)
+
+UpSetR::upset(upsetSubsetPredicted, sets = colnames(upsetSubsetPredicted), mb.ratio = c(0.55, 0.45), order.by = "freq", keep.order = T)
+
+write_data <- F
+if(write_data){
+svg(filename="~/phd/RNASeq/figures/upsetr_plot_pred_3.svg",
+     width=15,
+     height=10,
+     pointsize=12)
+UpSetR::upset(upsetSubsetPredicted, sets = colnames(upsetSubsetPredicted), mb.ratio = c(0.55, 0.45), order.by = "freq", keep.order = T)
+
+dev.off()
+}
+
+```
+
+
+```{r, eval=F}
+load("~/Downloads/R-master/r_files/distanceMelt.Rda")
+
+contig_labels <- read.table("~/phd/RNASeq/genome_contig_pairs.txt")
+colnames(contig_labels) <- c("target.name", "target.genome")
+
+taxa <- read.csv("~/phd/RNASeq/gammaproteobacteria_taxonomy.csv")
+
+taxa <- taxa %>% select(Genus, Order, Family) %>% 
+  dplyr::rename(target.genus = Genus, target.order = Order, target.family = Family)
+
+genus_labels <- read.table("~/phd/RNASeq/contig_genus_lables.txt")
+
+colnames(genus_labels) <- c("target.name", "target.genus")
+
+genus_labels <- genus_labels %>% left_join(contig_labels) %>% select(-target.name)
+
+genus_labels <- genus_labels %>% unique()
+
+genus_labels <- genus_labels %>% left_join(taxa) %>% filter(!is.na(target.family)) %>% unique()
+
+
+meltDat <- meltDat %>% select(target.genome, query.genome, distance) %>% group_by(target.genome, query.genome) %>% summarise(distance = max(distance)) %>% ungroup()
+
+genomes_analysed <- read.table("~/phd/RNASeq/analysed_genomes_list.txt", as.is = T, stringsAsFactors = F)
+colnames(genomes_analysed) <- c("target.genome")
+genomes_analysed <- genomes_analysed %>% unique()
+
+meltDat_analysed_1 <- genomes_analysed %>% left_join(meltDat, by = "target.genome")
+colnames(genomes_analysed) <- c("query.genome")
+
+meltDat_analysed <- genomes_analysed %>% left_join(meltDat_analysed_1, by = "query.genome")
+
+
+load(file = "~/Downloads/R-master/r_files/featuresSelected_v2.Rda")
+
+load("~/Downloads/R-master/r_files/randomForestDatAll.Rda")
+
+
+max_dists_pc <- randomForestDatAll %>% filter(group == "Positive Control", read.max.score > 1)
+p <- ggplot() +
+  geom_histogram(data = meltDat, aes(x = distance, y=..count../sum(..count..)), binwidth = 0.01) +
+  geom_histogram(data = meltDat_analysed, aes(x = distance, y=..count../sum(..count..)), fill = "blue", binwidth = 0.01) +
+  geom_freqpoly(data = max_dists_pc, aes(x = distance, y=..count../sum(..count..)), binwidth = 0.04) +
+  # geom_vline(xintercept = 0.01) +
+  # geom_vline(xintercept = 0.05) +
+  xlim(min = 0, max = 0.6) +
+    theme_bw()
+p
+
+ggsave(filename = "~/phd/thesis_figures/SVG/distances_srnas_and_genomes_2.svg", plot = p, width = 180, height = 83, units = "mm")
+
+
+df1 <- data.frame(x1 = c(0.01, 0.05, 0.15), x2 = c(0.063, 0.18,  0.24), y1 = c(1, 0.5, 0), y2 = c(1, 0.5, 0), group = c("Genus", "Family", "Order"))
+
+df2 <- data.frame(x1 = c(0.01, 0.05, 0.15), x2 = c(0.063, 0.18,  0.24), y1 = c(1, 0.5, 0), y2 = c(1, 0.5, 0), group = c("Genus", "Family", "Order"))
+
+  ggplot() +
+   geom_segment(aes(x = x1, y = y1, xend = x2, yend = y2, colour = group), data = df1, size = 3)
+
+
+p
+ggsave(filename = "~/phd/RNASeq/figures/distances_srnas_and_genomes.svg", plot = p, width = 450, height = 450, units = "mm")
+
+meltDat <- meltDat %>% left_join(genus_labels, by = "target.genome")
+
+genus_labels <- genus_labels %>% 
+  dplyr::rename(query.genome = target.genome, 
+                query.genus = target.genus,
+                query.family = target.family, 
+                query.order = target.order) 
+meltDat <- meltDat %>% left_join(genus_labels, by = "query.genome")
+
+meltDat[1:10,]
+
+minsGenus <- meltDat %>% group_by(target.genus, query.genus) %>% 
+  summarise(min_dist = min(distance)) %>% 
+  mutate(same.taxa = ifelse(target.genus == query.genus, T, F))
+
+maxsGenus <- meltDat %>% group_by(target.genus, query.genus) %>% 
+  summarise(max_dist = max(distance)) %>% 
+  mutate(same.taxa = ifelse(target.genus == query.genus, T, F))
+
+meansGenus <- meltDat %>% group_by(target.genus, query.genus) %>% 
+  summarise(mean_dist = mean(distance)) %>% 
+  mutate(same.taxa = ifelse(target.genus == query.genus, T, F))
+
+minsFamily <- meltDat %>% group_by(target.family, query.family) %>% 
+  summarise(min_dist = min(distance)) %>% 
+  mutate(same.taxa = ifelse(target.family == query.family, T, F))
+
+maxsFamily <- meltDat %>% group_by(target.family, query.family) %>% 
+  summarise(max_dist = max(distance))  %>% 
+  mutate(same.taxa = ifelse(target.family == query.family, T, F))
+
+meansFamily <- meltDat %>% group_by(target.family, query.family) %>% 
+  summarise(mean_dist = mean(distance))  %>% 
+  mutate(same.taxa = ifelse(target.family == query.family, T, F))
+
+
+minsOrder <- meltDat %>% group_by(target.order, query.order) %>% 
+  summarise(min_dist = min(distance)) %>% 
+  mutate(same.taxa = ifelse(target.order == query.order, T, F))
+
+maxsOrder <- meltDat %>% group_by(target.order, query.order) %>% 
+  summarise(max_dist = max(distance))  %>% 
+  mutate(same.taxa = ifelse(target.order == query.order, T, F))
+
+meansOrder <- meltDat %>% group_by(target.order, query.order) %>% 
+  summarise(mean_dist = mean(distance))  %>% 
+  mutate(same.taxa = ifelse(target.order == query.order, T, F))
+
+
+dat = maxsGenus
+
+genus_list <- c("Pseudomonas", "Enterobacter", "Serratia", "Klebsiella", "Escherichia")
+
+family_list <- c("Enterobacteriaceae", "Pseudomonadaceae", "Erwiniaceae", "Alteromonadaceae")
+
+order_list <- c("Enterobacterales", "Xanthomonadales")
+
+
+sd_range <- function(dat, n.of.sds = 2, select_list, use.order.list = T){
+  
+  colnames(dat) <- c("target", "query", "max_dist", "same.taxa")
+  if(use.order.list){
+dat <- dat %>% filter(same.taxa == T, target %in% select_list)
+  }else{
+  dat <- dat %>% filter(same.taxa == T)
+}
+mean_val <- mean(dat$max_dist)
+sd_val <- sd(dat$max_dist)
+min_val <- min(dat$max_dist)
+max_val <- max(dat$max_dist)
+
+
+print(paste("Min:", min_val, "Max:", max_val))
+
+print(paste(n.of.sds, "sd (lower):", (mean_val - sd_val*n.of.sds), n.of.sds, "sd (upper):", (mean_val + sd_val*n.of.sds)))
+}
+
+sd_range(dat = maxsGenus, select_list = genus_list, n.of.sds = 1)
+sd_range(dat = maxsFamily, select_list = family_list, n.of.sds = 1)
+sd_range(dat = maxsOrder %>% filter(target.order %in% c("Pseudomonadales", "Thiotrichales") == F), select_list = order_list, n.of.sds = 1, use.order.list = F)
+
+genus1 <- maxsGenus %>% ungroup() %>% filter(same.taxa, max_dist > 0) %>% select(max_dist) %>% mutate(group = "Genus")
+family1 <- maxsFamily %>% ungroup() %>% filter(same.taxa, max_dist > 0) %>% select(max_dist) %>% mutate(group = "Family")
+order1 <- maxsOrder %>% ungroup() %>% filter(same.taxa, max_dist > 0, target.order %in% c("Pasteurellaceae", "Pasteurellales", "Vibrionaceae") == F) %>% select(max_dist) %>% mutate(group = "Order")
+
+maxs1 <- genus1 %>% bind_rows(family1, order1)
+
+p <- ggplot() +
+geom_boxplot(data = maxs1 , aes(x = group, y = max_dist, fill = group)) + coord_flip()
+ 
+ggsave(filename = "~/phd/RNASeq/figures/distances_taxa_box_plot_small.svg", plot = p, width = 450, height = 450, units = "mm")
+
+assembly_summary <- read.table("~/phd/RNASeq/assembly_summary.txt", sep = "\t", fill = T, quote = "", comment.char = "")
+assembly_summary <- assembly_summary %>% select(V1, V5, V6, V7, V8, V18, V20, V12)
+colnames(assembly_summary) <- c("accession.1", "type", "taxid", "species taxid", "species", "accession.2", "genome_link", "assembly.type")
+
+accession_list <- meltDat %>% select(target.genome) %>% unique() %>% dplyr::rename(accession.1 = target.genome)
+
+accession_list <- accession_list %>% left_join(assembly_summary)
+
+taxid_list <- accession_list %>% select(taxid) %>% unique() %>% filter(!is.na(taxid))
+
+write.table(taxid_list, file= "~/phd/RNASeq/taxid_list.txt", quote = F, row.names = F, col.names = F)
+
+taxa_names <- read.table("~/phd/RNASeq/all_taxonomy_names_formatted.txt", sep = ":", header = F, fill = T)
+
+taxa_names <- taxa_names %>% separate(col = V1, into = c(NA, "Kingdom", "Phylum", "Class", "Order", "Family", "Genus"), sep = ";", remove = T, extra = 'drop') %>% dplyr::rename(taxid = V2)
+
+gca_taxa_names <- genus_labels %>%  dplyr::rename(accession.1 = target.genome, Genus = target.genus, Family = target.family, Order = target.order) %>% mutate(Kingdom = "Bacteria", Phylum = "Proteobacteria", Class = "Gammaproteobacteria") %>% select(accession.1, Kingdom, Phylum, Class, Order, Family, Genus)
+
+accession_list <- accession_list %>% filter(!is.na(accession.2)) %>% left_join(taxa_names) 
+
+all_dists <- meltDat %>% select(target.genome, query.genome, distance)
+
+gcf_gcf <- all_dists %>% filter(grepl("GCF", target.genome), grepl("GCF", query.genome))
+gcf_gca <- all_dists %>% filter(grepl("GCF", target.genome), grepl("GCA", query.genome))
+gca_gcf <- all_dists %>% filter(grepl("GCA", target.genome), grepl("GCF", query.genome))
+gca_gca <- all_dists %>% filter(grepl("GCA", target.genome), grepl("GCA", query.genome))
+
+
+
+tmp <- accession_list %>% dplyr::rename(target.genome = accession.1) %>% 
+  select(-type, -taxid, -`species taxid`, -species, -accession.2, -genome_link, -assembly.type)
+
+gcf_gcf <- gcf_gcf %>% left_join(tmp)
+
+tmp <- accession_list %>% dplyr::rename(query.genome = accession.1) %>% 
+  select(-type, -taxid, -`species taxid`, -species, -accession.2, -genome_link, -assembly.type)
+gcf_gcf <- gcf_gcf %>% left_join(tmp, by = "query.genome")
+
+
+
+
+
+
+tmp <- accession_list %>% dplyr::rename(target.genome = accession.1) %>% 
+  select(-type, -taxid, -`species taxid`, -species, -accession.2, -genome_link, -assembly.type)
+
+gcf_gca <- gcf_gca %>% left_join(tmp)
+
+tmp <- gca_taxa_names %>% dplyr::rename(query.genome = accession.1) 
+gcf_gca <- gcf_gca %>% left_join(tmp, by = "query.genome")
+
+
+
+
+tmp <- gca_taxa_names %>% dplyr::rename(target.genome = accession.1)
+
+gca_gcf <- gca_gcf %>% left_join(tmp)
+
+tmp <- accession_list %>% dplyr::rename(query.genome = accession.1) %>% 
+  select(-type, -taxid, -`species taxid`, -species, -accession.2, -genome_link, -assembly.type)
+gca_gcf <- gca_gcf %>% left_join(tmp, by = "query.genome")
+
+
+
+tmp <- gca_taxa_names %>% dplyr::rename(target.genome = accession.1) 
+
+gca_gca <- gca_gca %>% left_join(tmp)
+
+tmp <- gca_taxa_names %>% dplyr::rename(query.genome = accession.1)
+gca_gca <- gca_gca %>% left_join(tmp, by = "query.genome")
+
+all_dists <- gcf_gcf %>% bind_rows(gcf_gca, gca_gcf, gca_gca)
+
+
+maxsGenus <- all_dists %>% group_by(Genus.x, Genus.y) %>% 
+  summarise(max_dist = max(distance)) %>% 
+  mutate(same.taxa = ifelse(Genus.x == Genus.y, T, F))
+
+maxsFamily <- all_dists %>% group_by(Family.x, Family.y) %>% 
+  summarise(max_dist = max(distance)) %>% 
+  mutate(same.taxa = ifelse(Family.x == Family.y, T, F))
+
+maxsOrder <- all_dists %>% group_by(Order.x, Order.y) %>% 
+  summarise(max_dist = max(distance)) %>% 
+  mutate(same.taxa = ifelse(Order.x == Order.y, T, F))
+
+maxsClass <- all_dists %>% group_by(Class.x, Class.y) %>% 
+  summarise(max_dist = max(distance)) %>% 
+  mutate(same.taxa = ifelse(Class.x == Class.y, T, F))
+
+maxsPhylum <- all_dists %>% group_by(Phylum.x, Phylum.y) %>% 
+  summarise(max_dist = max(distance)) %>% 
+  mutate(same.taxa = ifelse(Phylum.x == Phylum.y, T, F))
+
+maxsKingdom <- all_dists %>% group_by(Kingdom.x, Kingdom.y) %>% 
+  summarise(max_dist = max(distance)) %>% 
+  mutate(same.taxa = ifelse(Kingdom.x == Kingdom.y, T, F))
+
+
+
+
+
+
+
+genus1 <- maxsGenus %>% ungroup() %>% filter(same.taxa, max_dist > 0) %>% select(max_dist) %>% mutate(group = "Genus")
+family1 <- maxsFamily %>% ungroup() %>% filter(same.taxa, max_dist > 0) %>% select(max_dist) %>% mutate(group = "Family")
+order1 <- maxsOrder %>% ungroup() %>% filter(same.taxa, max_dist > 0) %>% select(max_dist) %>% mutate(group = "Order")
+class1 <- maxsClass %>% ungroup() %>% filter(same.taxa, max_dist > 0) %>% select(max_dist) %>% mutate(group = "Class")
+phylum1 <- maxsPhylum %>% ungroup() %>% filter(same.taxa, max_dist > 0) %>% select(max_dist) %>% mutate(group = "Phylum")
+kingdom1 <- maxsKingdom %>% ungroup() %>% filter(same.taxa, max_dist > 0) %>% select(max_dist) %>% mutate(group = "Kingdom")
+
+
+maxs1 <- genus1 %>% bind_rows(family1, order1, class1, phylum1, kingdom1)
+
+p <- ggplot() +
+geom_boxplot(data = maxs1 , aes(x = group, y = max_dist, fill = group)) + coord_flip()
+ p
+ggsave(filename = "~/phd/RNASeq/figures/distances_taxa_box_plot.svg", plot = p, width = 450, height = 450, units = "mm")
+```
+
+```{r pc_data_upsetr}
+
+pairs <- read.table("~/phd/RNASeq/query_target_pairs_pc.txt")
+colnames(pairs) <- c("target.name", "ID")
+contig_labels <- read.table("~/phd/RNASeq/genome_contig_pairs.txt")
+colnames(contig_labels) <- c("target.name", "target.genome")
+pairs <- pairs %>% left_join(contig_labels, by = 'target.name')
+
+genus_labels <- read.table("~/phd/RNASeq/contig_genus_lables.txt")
+
+colnames(genus_labels) <- c("target.name", "genus")
+
+pairs <- pairs %>% left_join(genus_labels)
+
+pc_keep <- read.table("~/phd/RNASeq/srna_seqs/version_1/positive_control/large_alignments/positive_control_keep_list.txt")
+
+pc_keep <- pc_keep %>% dplyr::rename(ID = V1) %>% mutate(keep = T)
+
+pairs <- pairs %>% left_join(pc_keep, by = "ID") %>% filter(!is.na(keep)) %>% select(-keep)
+
+repDat <- pairs %>% select(ID, genus) %>% mutate(count = 1)
+mat <- reshape2::acast(repDat, formula = ID ~ genus)
+
+
+upsetDat <- as.data.frame(mat)
+
+upsetDat$names <- row.names(upsetDat)
+upsetDat[upsetDat != 0] <- 1
+
+genus_selection <- read.table("~/Downloads/python_git/python_files/genera_list.txt")
+
+tmp <- genus_selection %>% dplyr::rename(genus = V1) %>% mutate(keep = T)
+
+conitgs_selected <- genus_labels %>% left_join(tmp) %>% 
+  filter(!is.na(keep)) %>% select(-keep) %>% left_join(contig_labels) %>% 
+  group_by(genus) %>% top_n(n = 1) %>% ungroup() %>% select(target.genome) %>% unique() 
+
+write_file <- F
+if(write_file){
+write.table(x = conitgs_selected, file = "~/phd/RNASeq/upsetr_genomes_list.txt", row.names = F, col.names = F, quote = F)
+}
+
+colVals<- match(x = genus_selection$V1, table = colnames(upsetDat))
+
+colVals <- colVals[!is.na(colVals)]
+
+upsetSubset <- upsetDat[,colVals]
+
+sumsUpset <- rowSums(upsetSubset)
+
+sumsDat <- data.frame(ID = row.names(upsetSubset), sums = sumsUpset)
+upsetSubsetPC <- upsetSubset
+
+
+tree_order <- c("Escherichia", "Shigella", "Salmonella", "Enterobacter", "Klebsiella", "Plautia", "Citrobacter","Serratia", "Wigglesworthia", "Buchnera", "Sodalis", "Lonsdalea", "Brenneria", "Dickeya", "Edwardsiella", "Pantoea", "Erwinia", "Proteus", "Providencia", "Xenorhabdus", "Photorhabdus", "Mannheimia", "Aggregatibacter", "Alishewanella", "Actinobacillus", "Yersinia", "Vibrio", "Alteromonas", "Agarivorans", "Pseudoalteromonas", "Moritella", "Shewanella", "Psychrobacter", "Moraxella", "Acinetobacter", "Azotobacter", "Pseudomonas", "Marinobacter", "Methylomicrobium", "Methylomonas", "Cycloclasticus", "Methylococcus", "Francisella", "Pseudoxanthomonas", "Stenotrophomonas", "Xanthomonas", "Xylella", "Lysobacter", "Candidatus")
+
+cols_order <- match(tree_order, colnames(upsetSubsetPC))
+
+tmp <- data.frame(tree_order, cols_order)
+
+upsetSubsetPC <- upsetSubsetPC[,cols_order]
+
+save(upsetSubsetPC, file= "~/Downloads/R-master/r_files/upsetSubsetPC.Rda")
+load("~/Downloads/R-master/r_files/upsetSubsetPC.Rda")
+
+sumsUpset <- colSums(upsetSubsetPC)
+
+sumsDat <- data.frame(ID = colnames(upsetSubsetPC), sums = sumsUpset)
+
+analysed_genomes <- c("Escherichia", "Shigella", "Salmonella", "Enterobacter", "Klebsiella","Serratia", "Edwardsiella", "Erwinia", "Photorhabdus", "Yersinia", "Alteromonas", "Acinetobacter", "Pseudomonas", "Methylomicrobium", "Stenotrophomonas", "Xanthomonas", "Xylella", "Lysobacter")
+
+cols_order <- match(analysed_genomes, sumsDat$ID)
+
+sumsDat <- sumsDat[cols_order,]
+
+
+sumsDat$genome_count <- c(6, 3, 5, 4, 3, 3, 1, 1, 2, 5, 4, 4,6, 1, 2, 3, 1, 1)
+sumsDat$rnaseq_count <- c(53, 22, 44, 21, 15, 33, 5, 5, 4, 2, 23, 36, 64, 5, 10, 20, 5, 6)
+
+fit <- lm(sums~rnaseq_count, data = sumsDat)
+
+summary(fit)
+
+ggplot() +
+  geom_point(data = sumsDat, aes(x = rnaseq_count, y = sums)) +
+  geom_abline(intercept = 49.3650, slope = 1.3336)
+
+pcSum <- colSums(upsetSubsetPC)
+
+pcSum <- as.data.frame(pcSum)
+
+UpSetR::upset(upsetSubsetPC, sets = colnames(upsetSubsetPC), mb.ratio = c(0.55, 0.45), order.by = "freq", keep.order = T)
+
+write_data <- F
+if(write_data){
+svg(filename="~/phd/RNASeq/figures/upsetr_plot_pc_3.svg",
+     width=15,
+     height=10,
+     pointsize=12)
+UpSetR::upset(upsetSubsetPC, sets = colnames(upsetSubsetPC), mb.ratio = c(0.55, 0.45), order.by = "freq", keep.order = T)
+
+dev.off()
+}
+
+```
+
+```{r tree_viewer, echo=T, include=F, eval=F}
+  tree <- read.tree("~/phd/RNASeq/upsetr.tree")
+
+p <- ggtree(tree) + 
+  geom_tiplab(align = T) 
+
+p
+
+ggsave(filename = "~/phd/RNASeq/figures/upsetr_tree.svg", plot = p, width = 8, height = 16)
+
+```
+
+##COPY OVER
+
+```{r, eval=F}
+pred <- read.table("~/phd/RNASeq/srna_seqs/version_1/predicted/large_alignments/seqs_count.txt", fill = T)
+pc <- read.table("~/phd/RNASeq/srna_seqs/version_1/positive_control/large_alignments/seqs_count.txt", fill = T)
+nc <- read.table("~/phd/RNASeq/srna_seqs/version_1/negative_control/large_alignments/seqs_count.txt", fill = T)
+
+load("~/Downloads/R-master/r_files/randomForestDatAll.Rda")
+load("~/Downloads/R-master/r_files/predDat_all.Rda")
+
+control_ids <- randomForestDatAll %>% 
+  mutate(keep = ifelse(group == "Positive Control", ifelse(read.max.score > 15, T, F), T)) %>% select(ID, keep) %>% unique() 
+pred_ids <- predDat %>% select(ID) %>% unique()%>%
+  mutate(keep = T)
+
+pred <- pred %>% dplyr::rename(ID = V1, count = V2) %>% 
+  left_join(pred_ids, by = "ID") %>% filter(!is.na(keep)) %>% 
+  mutate(group = "Predicted")
+pc <- pc %>% dplyr::rename(ID = V1, count = V2) %>% 
+  left_join(control_ids, by = "ID") %>% filter(keep) %>% 
+  mutate(group = "Positive Control")
+nc <- nc %>% dplyr::rename(ID = V1, count = V2) %>% 
+  left_join(control_ids, by = "ID") %>% filter(keep) %>% 
+  mutate(group = "Negative Control")
+
+counts <- pred %>% bind_rows(pc, nc)
+
+decay = data.frame(x = c(1:100))
+# decay <- decay %>% mutate(y = exp(-0.5x))
+ggplot() +
+  geom_line(data = decay, aes(x = x, y = exp(-x)), color = 'blue') +
+  geom_line(data = decay, aes(x = x, y = exp(-2*x)), color = "red") +
+  geom_line(data = decay, aes(x = x, y = exp(-0.5*x)))
+
+cumulativeCounts <- function(dists, smooth = T){
+
+  groups <- unique(dists$group)
+  for(i in groups){
+    dat <- dists %>% filter(group == i)
+    dat <- dat %>% mutate(count = 1) %>% 
+    arrange(-max_dist) %>% group_by(group) %>% 
+    mutate(cumulativeCount = cumsum(count)) %>% ungroup() %>% 
+    group_by(group, max_dist) %>% summarise(cumulative_prop = max(cumulativeCount)/ nrow(dat))
+    
+    if(smooth){
+      dat <- as.data.frame(spline(x = dat$max_dist,y =  dat$cumulative_prop))
+    }
+    dat <- dat %>% ungroup() %>% mutate(group = i)
+    if(exists('combinedDat')){
+      combinedDat <- combinedDat %>% bind_rows(dat)
+    }else{
+      combinedDat <- dat 
+    }
+  }
+  return(combinedDat)  
+
+}
+countsCumul <- counts %>% dplyr::rename(max_dist = count) 
+countsCumul <- cumulativeCounts(dists = countsCumul, smooth = F)
+
+p <- ggplot() +
+  geom_line(data = countsCumul, aes(x= max_dist, y = cumulative_prop, group = group, colour = group)) +
+  xlim(min = 0, max = 200)
+p
+
+
+# 
+# p <- ggplot() +
+#   geom_freqpoly(data = counts, aes(x = count, y = ..density.., group = group, color = group), binwidth = 1) +
+#   scale_x_continuous(trans = "log10", limits = c(1, NA)) +
+#   theme_bw()
+# p
+ggsave(filename = "~/phd/thesis_figures/SVG/counts_distribution.svg", plot = p)
+}
+  
+```
+
+
+```{r number_of_sequences, eval=F}
+assembly_summary <- read.table("~/phd/RNASeq/assembly_summary.txt", sep = "\t", fill = T, quote = "", comment.char = "")
+assembly_summary <- assembly_summary %>% select(V1, V5, V6, V7, V8, V18, V20, V12)
+colnames(assembly_summary) <- as.character(unlist(assembly_summary[2,]))
+datesDat <- assembly_summary %>% select(seq_rel_date) %>% filter(seq_rel_date != "", seq_rel_date != "seq_rel_date") %>% mutate(count = 1, group = "Prokaryotic Genomes") %>% arrange(seq_rel_date)
+
+# save(datesDat, file = "~/Downloads/R-master/r_files/datesDat.Rda")
+
+rnaseq <- read.csv("~/phd/sra_rnaseq_dates.csv")
+
+rnaseq <- rnaseq[,1:6]
+
+rnaseq <- rnaseq %>% mutate(count = 1, group = "RNA-Seq experiments")
+
+# save(rnaseq, file = "~/Downloads/R-master/r_files/rnaseq.Rda")
+
+rnaseq <- rnaseq %>% separate(ReleaseDate, into = c("seq_rel_date", NA), sep = " ", remove = T, extra = 'drop')
+
+
+metagenomes <- read.table("~/phd/metagenome_submission_dates.txt", header = F)
+
+phage <- read.table("~/phd/bacteriophage.tbl", header = T, sep = "\t", fill = T, row.names = NULL)
+archaeal_viruses <- read.table("~/phd/archaeal_viruses.tbl", header = T, sep = "\t", fill = T, row.names = NULL)
+
+phage <- phage %>% select(Host) %>% filter(Host != "")
+archaeal_viruses <- archaeal_viruses %>% select(Host) %>% filter(Host != "")
+phage <- phage %>% mutate(count = 1, group = "Phage Genomes")
+archaeal_viruses <- archaeal_viruses %>% mutate(count = 1, group = "Archaeal Virus Genomes")
+
+
+
+phage <- phage %>% mutate(date_val = format(as.Date(as.character(Host), format = "%d/%m/%Y"), "%y/%m/%d")) %>% filter(!is.na(date_val)) %>% dplyr::rename(seq_rel_date = Host)
+archaeal_viruses <- archaeal_viruses %>% mutate(date_val = format(as.Date(as.character(Host), format = "%d/%m/%Y"), "%y/%m/%d")) %>% filter(!is.na(date_val)) %>% dplyr::rename(seq_rel_date = Host)
+
+
+
+metagenomes <- metagenomes %>% mutate(count = 1, group = "Metagenomes")
+
+metagenomes <- metagenomes %>% mutate(date_val = format(as.Date(as.character(V1), format = "%Y-%m-%d"), "%y/%m/%d")) %>% filter(!is.na(date_val)) %>% dplyr::rename(seq_rel_date = V1)
+
+
+rnaseq <- rnaseq %>% mutate(date_val = format(as.Date(seq_rel_date, format = "%d/%m/%y"), "%y/%m/%d"))
+
+datesDat <- datesDat %>% mutate(date_val = format(as.Date(seq_rel_date, format = "%Y/%m/%d"), "%y/%m/%d"))
+
+
+
+
+
+
+
+
+
+
+dists <- rnaseq %>% select(seq_rel_date, count, group, date_val) %>% bind_rows(datesDat, metagenomes, phage, archaeal_viruses) %>% mutate(date_val = as.Date(date_val, format = "%y/%m/%d"))
+smooth <- F
+  groups <- unique(dists$group)
+  i <- groups[1]
+  for(i in groups){
+    dat <- dists %>% filter(group == i)
+    dat <- dat %>% mutate(count = 1) %>% 
+    arrange(date_val) %>% group_by(group) %>% 
+    mutate(cumulativeCount = cumsum(count)) %>% ungroup() %>% 
+    group_by(group, date_val) %>% summarise(cumulative_prop = max(cumulativeCount))
+
+    dat <- dat %>% ungroup() %>% mutate(group = i)
+    if(exists('combinedDat')){
+      combinedDat <- combinedDat %>% bind_rows(dat)
+    }else{
+      combinedDat <- dat 
+    }
+  }
+
+  sequencing_numbers <- combinedDat
+  
+  # save(sequencing_numbers,file = "~/Downloads/R-master/r_files/sequencing_numbers.Rda")
+  
+  load("~/Downloads/R-master/r_files/sequencing_numbers.Rda")
+  
+  p <- ggplot() +
+  geom_line(data = sequencing_numbers %>% filter(group != "Phage Genomes", group != "Archaeal Virus Genomes"), aes(x= date_val, y = cumulative_prop, group = group, colour = group)) +
+    geom_hline(yintercept = 1593)
+p
+
+
+ggsave(filename = "~/phd/thesis_figures/SVG/database_sequencing_counts.svg", plot = p, width = 8, height = 8)
+
+  p <- ggplot() +
+  geom_line(data = sequencing_numbers %>% filter(group %in% c("Phage Genomes", "Archaeal Virus Genomes")), aes(x= date_val, y = cumulative_prop, group = group, colour = group)) 
+p
+ggsave(filename = "~/phd/thesis_figures/SVG/database_sequencing_counts_viruses.svg", plot = p, width = 8, height = 8)
+
+
+
+  p <- ggplot() +
+  geom_line(data = sequencing_numbers, aes(x= date_val, y = cumulative_prop, group = group, colour = group)) +
+    scale_y_continuous(trans = "log10")
+p
+
+
+ ggsave(filename = "~/phd/thesis_figures/SVG/database_sequencing_counts_log.svg", plot = p, width = 8, height = 8)
+
+```
+
+```{r phage_classification_proportions, eval=F}
+dat <- data.frame(tool = c("CLARK", "blastx", "VirSorter", "VirSorter", "mimax", "VirFinder", "VirFinder", "IMG/VR", "Wish", "VirHostMatcher", "HostPhinder", "dion", "coabundance", "blastn", "tblastx", "crispr", "exact.match", "kmer", "codon", "kmer.3", "GC"),
+                  type = c("kmer", "similarity", "kmer", "kmer", "homologues", "kmer", "kmer", "CRISPR", "kmer", "kmer", "kmer", "CRISPR", "coabundance", "similarity", "similarity", "CRISPR", "similarity", "kmer", "kmer", "kmer", "GC"),
+                  classified.percent = c(0.96, 4.01, 19, 0.5, 67.7, 67, 6.0, 15.3, 40.1, 33, 74, 33.81, 15.98, 62.32, 46.83, 26.95, 50.37, 34.63, 15.24, 21.59, 15.24),
+                  archaea.included = c(T, T, F, F, F, T, T, T, F, T, F, F, F, F, F, F, F, F, F, F, F),
+                  data.source = c("metagenome", "metagenome", "complete.phage", "metagenome", "complete.phage", "complete.phage", "metagenome", "metagenome", "complete.phage", "complete.phage", "complete.phage", "complete.phage", "complete.phage", "complete.phage", "complete.phage", "complete.phage", "complete.phage", "complete.phage", "complete.phage", "complete.phage", "complete.phage"),
+                  self.reporting = c(F, F, F, F, T, T, F, F, T, T, T, T, T, T, T, T, T, T, T, T, T))
+
+
+dat <- dat %>% mutate(group = paste(self.reporting, data.source))
+
+
+dat_combined <- data.frame(tool = c("CLARK", "blastx", "VirSorter", "VirSorter", "mimax", "VirFinder", "VirFinder", "IMG/VR", "Wish", "VirHostMatcher", "HostPhinder", "CRISPR", "coabundance", "blastn", "tblastx", "CRISPR", "exact.match", "k-mer", "codon", "3-mer", "G+C"),
+                  type = c("kmer", "similarity", "kmer", "kmer", "similarity", "kmer", "kmer", "CRISPR", "kmer", "kmer", "kmer", "CRISPR", "coabundance", "similarity", "similarity", "CRISPR", "similarity", "kmer", "kmer", "kmer", "kmer"),
+                  classified.percent = c(0.96, 4.01, 19, 0.5, 67.7, 67, 6.0, 15.3, 40.1, 33, 74, 33.81, 15.98, 62.32, 46.83, 26.95, 50.37, 34.63, 15.24, 21.59, 15.24),
+                  archaea.included = c(T, T, F, F, F, T, T, T, F, T, F, F, F, F, F, F, F, F, F, F, F),
+                  data.source = c("metagenome", "metagenome", "complete.phage", "metagenome", "complete.phage", "complete.phage", "metagenome", "metagenome", "complete.phage", "complete.phage", "complete.phage", "complete.phage", "complete.phage", "complete.phage", "complete.phage", "complete.phage", "complete.phage", "complete.phage", "complete.phage", "complete.phage", "complete.phage"),
+                  self.reporting = c(F, F, F, F, T, T, F, F, T, T, T, T, T, T, T, T, T, T, T, T, T))
+
+
+dat_combined <- dat_combined %>% mutate(group = paste(self.reporting, data.source))
+
+p <- ggplot() +
+  geom_boxplot(data = dat, aes(x = type, y = classified.percent, fill = self.reporting, color = self.reporting), position = "dodge")
+p
+ggsave(filename = "~/phd/thesis_figures/SVG/phage_classification_by_self_reporting.svg", plot = p, width = 8, height = 8)
+
+
+p <- ggplot() +
+  geom_boxplot(data = dat, aes(x = type, y = classified.percent, fill = data.source, color = data.source), position = "dodge")
+
+
+ggsave(filename = "~/phd/thesis_figures/SVG/phage_classification_by_data_source.svg", plot = p, width = 8, height = 8)
+
+
+p <- ggplot() +
+  geom_boxplot(data = dat, aes(x = type, y = classified.percent, fill = group, color = group), position = "dodge")
+p
+
+p <- ggplot(data = dat_combined %>% filter(type != "coabundance"), aes(x = type, y = classified.percent, fill = group, color = group, label = tool)) +
+  geom_jitter(position = position_jitter(seed = 1))+
+geom_text(position = position_jitter(seed = 1))
+p
+
+
+p <- ggplot(data = dat %>% filter(type != "coabundance"), aes(x = type, y = classified.percent, fill = group, color = group, label = tool)) +
+  geom_jitter(position = position_jitter(seed = 1))+
+geom_text(position = position_jitter(seed = 1))
+p
+
+
+ggsave(filename = "~/phd/thesis_figures/SVG/phage_classification_2.svg", plot = p, width = 8, height = 8)
+
+```
+
